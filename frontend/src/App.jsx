@@ -252,6 +252,11 @@ function parseDate(d) {
   if (d instanceof Date) return d;
   if (typeof d === 'number') return new Date(d < 1e12 ? d * 1000 : d);
   if (typeof d === 'string') {
+    // Numeric string (Unix timestamp from varchar column): "1771615286"
+    if (/^\d{9,13}$/.test(d.trim())) {
+      const num = parseInt(d.trim(), 10);
+      return new Date(num < 1e12 ? num * 1000 : num);
+    }
     // MySQL datetime: "2025-06-10 08:33:26" -> needs T separator
     const fixed = d.replace(' ', 'T');
     const date = new Date(fixed.includes('T') && !fixed.includes('Z') && !fixed.includes('+') ? fixed + 'Z' : fixed);
@@ -794,7 +799,7 @@ function ChatApp() {
     return elements;
   };
 
-  const activeChatDisplay = activeChat?.displayName || activeChat?.chat_label || activeChat?.sender_name || activeChat?.sender_mobile || '';
+  const activeChatDisplay = activeChat?.chat_label || (activeChat?.sender_name && activeChat.sender_name !== 'API' ? activeChat.sender_name : null) || activeChat?.displayName || activeChat?.sender_mobile || formatPhoneDisplay(getContactNumber(activeChat?.chat_id)) || '';
   const activeChatProfile = activeChat?.profile;
   const activeChatProfilePic = activeChatProfile?.imgUrl || activeChatProfile?.profilePicUrl || activeChatProfile?.profileImage || null;
 

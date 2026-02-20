@@ -97,7 +97,7 @@ app.get('/api/chats/:lineUid', authMiddleware, async (req, res) => {
         ...r,
         last_message: lastMsg,
         profile: profile,
-        displayName: r.chat_label || r.sender_name || r.sender_mobile || 'Unknown'
+        displayName: r.chat_label || (r.sender_name && r.sender_name !== 'API' ? r.sender_name : null) || r.sender_mobile || 'Unknown'
       };
     });
     res.json(chats);
