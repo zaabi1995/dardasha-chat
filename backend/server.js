@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const path = require('path');
 const axios = require('axios');
+const { execSync } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3456;
@@ -24,6 +25,47 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   charset: 'utf8mb4'
 });
+
+// ===== Odoo Contact Name Enrichment =====
+
+// Phone normalization for Oman numbers
+const normalizePhone = (phone) => {
+  if (!phone) return null;
+  let p = phone.replace(/[\s\-\(\)\+]/g, '');
+  if (p.startsWith('00968')) p = p.slice(2);
+  if (p.startsWith('968') && p.length === 11) return p;
+  if (p.length === 8 && /^[2-9]/.test(p)) return '968' + p;
+  return p;
+};
+
+let odooContactsCache = {};
+let odooContactsCacheTime = 0;
+const ODOO_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+const refreshOdooContacts = () => {
+  try {
+    const result = execSync('python3 /opt/bhd-chat/backend/odoo_contacts.py', { timeout: 15000 }).toString().trim();
+    odooContactsCache = JSON.parse(result);
+    odooContactsCacheTime = Date.now();
+    console.log(`[Odoo] Loaded ${Object.keys(odooContactsCache).length} contacts`);
+  } catch (e) {
+    console.error('[Odoo] Failed to refresh contacts:', e.message);
+  }
+};
+
+const getOdooContactName = (senderMobile) => {
+  if (Date.now() - odooContactsCacheTime > ODOO_CACHE_TTL) {
+    refreshOdooContacts();
+  }
+  if (!senderMobile) return null;
+  const normalized = normalizePhone(senderMobile);
+  return normalized ? (odooContactsCache[normalized] || null) : null;
+};
+
+// Pre-load on startup
+refreshOdooContacts();
+
+// ===== End Odoo Integration =====
 
 // Auth middleware
 function authMiddleware(req, res, next) {
@@ -93,11 +135,15 @@ app.get('/api/chats/:lineUid', authMiddleware, async (req, res) => {
       let profile = null;
       try { lastMsg = typeof r.last_message === 'string' ? JSON.parse(r.last_message) : r.last_message; } catch(e) {}
       try { profile = typeof r.profile === 'string' ? JSON.parse(r.profile) : r.profile; } catch(e) {}
+
+      // Odoo contact name enrichment
+      const odooName = getOdooContactName(r.sender_mobile);
+
       return {
         ...r,
         last_message: lastMsg,
         profile: profile,
-        displayName: r.chat_label || (r.sender_name && r.sender_name !== 'API' ? r.sender_name : null) || r.sender_mobile || 'Unknown'
+        displayName: r.chat_label || odooName || (r.sender_name && r.sender_name !== 'API' ? r.sender_name : null) || r.sender_mobile || 'Unknown'
       };
     });
     res.json(chats);
@@ -304,7 +350,7 @@ app.delete('/api/messages/:messageId', authMiddleware, async (req, res) => {
   }
 });
 
-// Get contacts for a line
+// Get contacts for a line (enriched with Odoo names)
 app.get('/api/contacts/:lineUid', authMiddleware, async (req, res) => {
   try {
     const { lineUid } = req.params;
@@ -316,26 +362,37 @@ app.get('/api/contacts/:lineUid', authMiddleware, async (req, res) => {
       `SELECT DISTINCT sender_name, sender_mobile, chat_label, chat_id FROM beta_chats WHERE chat_id LIKE ? ORDER BY sender_name`,
       [`${lineNum}_%`]
     );
-    res.json(rows);
+
+    const enriched = rows.map(r => ({
+      ...r,
+      odooName: getOdooContactName(r.sender_mobile),
+      displayName: r.chat_label || getOdooContactName(r.sender_mobile) || (r.sender_name && r.sender_name !== 'API' ? r.sender_name : null) || r.sender_mobile || 'Unknown'
+    }));
+
+    res.json(enriched);
   } catch (e) {
     console.error('GET /api/contacts error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-// Sync Odoo contacts (placeholder — fetches from Odoo XML-RPC)
-app.post('/api/sync-odoo-contacts', authMiddleware, async (req, res) => {
-  try {
-    // This would sync contacts from Odoo — simplified version
-    res.json({ success: true, message: 'Odoo sync not yet configured' });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+// Odoo contacts lookup endpoint
+app.get('/api/odoo-contacts', authMiddleware, (req, res) => {
+  if (Date.now() - odooContactsCacheTime > ODOO_CACHE_TTL) {
+    refreshOdooContacts();
   }
+  res.json({ count: Object.keys(odooContactsCache).length, contacts: odooContactsCache });
+});
+
+// Force refresh Odoo contacts
+app.post('/api/odoo-contacts/refresh', authMiddleware, (req, res) => {
+  refreshOdooContacts();
+  res.json({ success: true, count: Object.keys(odooContactsCache).length });
 });
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
+  res.json({ status: 'ok', time: new Date().toISOString(), odooContacts: Object.keys(odooContactsCache).length });
 });
 
 // Serve frontend static files
