@@ -246,24 +246,9 @@ function LoginPage({ onLogin }) {
 }
 
 /* ========== HELPERS ========== */
-/* Parse dates from various formats (MySQL datetime, unix timestamps, ISO strings) */
-function parseDate(d) {
-  if (!d) return null;
-  if (d instanceof Date) return d;
-  if (typeof d === 'number') return new Date(d < 1e12 ? d * 1000 : d);
-  if (typeof d === 'string') {
-    // MySQL datetime: "2025-06-10 08:33:26" -> needs T separator
-    const fixed = d.replace(' ', 'T');
-    const date = new Date(fixed.includes('T') && !fixed.includes('Z') && !fixed.includes('+') ? fixed + 'Z' : fixed);
-    if (!isNaN(date.getTime())) return date;
-  }
-  return null;
-}
-
 function formatTime(ts) {
   if (!ts) return '';
-  const d = parseDate(ts);
-  if (!d) return '';
+  const d = new Date(typeof ts === 'number' ? (ts < 1e12 ? ts * 1000 : ts) : ts);
   const now = new Date();
   const isToday = d.toDateString() === now.toDateString();
   const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
@@ -276,15 +261,13 @@ function formatTime(ts) {
 
 function formatMsgTime(ts) {
   if (!ts) return '';
-  const d = parseDate(ts);
-  if (!d) return '';
+  const d = new Date(typeof ts === 'number' ? (ts < 1e12 ? ts * 1000 : ts) : ts);
   return d.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true });
 }
 
 function formatDate(ts) {
   if (!ts) return '';
-  const d = parseDate(ts);
-  if (!d) return '';
+  const d = new Date(typeof ts === 'number' ? (ts < 1e12 ? ts * 1000 : ts) : ts);
   const now = new Date();
   if (d.toDateString() === now.toDateString()) return 'Today';
   const y = new Date(now); y.setDate(y.getDate()-1);
@@ -302,24 +285,6 @@ function isGroupChat(chatId) {
   const parts = chatId.split('_');
   const contactPart = parts.slice(1).join('_');
   return /^\d{15,}$/.test(contactPart);
-}
-
-function getContactNumber(chatId) {
-  if (!chatId) return '';
-  const parts = chatId.split('_');
-  // chat_id format: {instanceNumber}_{contactNumber}_{uid} or {instanceNumber}_{contactNumber}
-  // Take index [1] for contact number
-  if (parts.length >= 2) return parts[1];
-  return '';
-}
-
-function formatPhoneDisplay(num) {
-  if (!num) return '';
-  // Format: 96871616161 -> +968 7161 6161
-  if (num.length === 11 && num.startsWith('968')) {
-    return '+' + num.slice(0,3) + ' ' + num.slice(3,7) + ' ' + num.slice(7);
-  }
-  return num;
 }
 
 // Linkify URLs in text
@@ -807,20 +772,12 @@ function ChatApp() {
           <button onClick={logout}>Logout</button>
         </div>
         <div className="line-tabs">
-          {lines.map(line => {
-            // Show title name; if name is just a raw number, format it nicer
-            let displayName = line.name || line.number;
-            if (/^\d+$/.test(displayName) && displayName.length > 8) {
-              // Raw number — show last 8 digits formatted
-              displayName = displayName.slice(-8);
-            }
-            return (
-              <div key={line.uid} className={`line-tab ${activeLine?.uid === line.uid ? 'active' : ''}`}
-                onClick={() => { setActiveLine(line); setActiveChat(null); setMobileShowChat(false); }}>
-                {displayName}
-              </div>
-            );
-          })}
+          {lines.map(line => (
+            <div key={line.uid} className={`line-tab ${activeLine?.uid === line.uid ? 'active' : ''}`}
+              onClick={() => { setActiveLine(line); setActiveChat(null); setMobileShowChat(false); }}>
+              {line.name}
+            </div>
+          ))}
         </div>
         <div className="search-bar">
           <input placeholder="Search or start new chat" value={search} onChange={e => setSearch(e.target.value)} />
@@ -876,7 +833,7 @@ function ChatApp() {
               <div className="chat-header-name" onClick={() => { setRenameValue(activeChat.chat_label||''); setShowRename(true); }}>
                 {activeChatDisplay}
               </div>
-              <div className="chat-header-sub">{formatPhoneDisplay(getContactNumber(activeChat?.chat_id)) || activeChat.sender_mobile || ''}</div>
+              <div className="chat-header-sub">{activeChat.sender_mobile || ''}</div>
             </div>
           </div>
 
