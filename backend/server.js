@@ -27,8 +27,6 @@ const pool = mysql.createPool({
 });
 
 // ===== Odoo Contact Name Enrichment =====
-
-// Phone normalization for Oman numbers
 const normalizePhone = (phone) => {
   if (!phone) return null;
   let p = phone.replace(/[\s\-\(\)\+]/g, '');
@@ -40,7 +38,7 @@ const normalizePhone = (phone) => {
 
 let odooContactsCache = {};
 let odooContactsCacheTime = 0;
-const ODOO_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const ODOO_CACHE_TTL = 5 * 60 * 1000;
 
 const refreshOdooContacts = () => {
   try {
@@ -62,10 +60,221 @@ const getOdooContactName = (senderMobile) => {
   return normalized ? (odooContactsCache[normalized] || null) : null;
 };
 
-// Pre-load on startup
 refreshOdooContacts();
 
-// ===== End Odoo Integration =====
+// ===== URL rewriting =====
+function fixMediaUrl(url) {
+  if (!url) return url;
+  return url.replace(/http:\/\/localhost:3000/g, 'https://dardasha.om');
+}
+
+// ===== Shared message parser =====
+function parseMessageRow(row) {
+  let msgContext = null;
+  try {
+    msgContext = typeof row.msgContext === 'string' ? JSON.parse(row.msgContext) : row.msgContext;
+  } catch(e) {
+    msgContext = row.msgContext;
+  }
+
+  // Parse context (quoted/reply message)
+  let quotedMsg = null;
+  if (row.context) {
+    try {
+      const ctx = typeof row.context === 'string' ? JSON.parse(row.context) : row.context;
+      if (ctx) {
+        if (ctx.conversation) {
+          quotedMsg = { text: ctx.conversation };
+        } else if (ctx.extendedTextMessage?.text) {
+          quotedMsg = { text: ctx.extendedTextMessage.text };
+        } else if (ctx.imageMessage) {
+          quotedMsg = { text: '📷 Photo' };
+        } else if (ctx.videoMessage) {
+          quotedMsg = { text: '🎬 Video' };
+        } else if (ctx.audioMessage) {
+          quotedMsg = { text: '🎤 Voice message' };
+        } else if (ctx.documentMessage) {
+          quotedMsg = { text: '📄 ' + (ctx.documentMessage.fileName || 'Document') };
+        } else {
+          // try to get any text
+          const vals = Object.values(ctx);
+          for (const v of vals) {
+            if (typeof v === 'string' && v.length > 0 && v.length < 500) {
+              quotedMsg = { text: v };
+              break;
+            }
+          }
+        }
+      }
+    } catch(e) {}
+  }
+
+  // Determine parsed type and extract media info
+  let parsedType = row.type || 'text';
+  let mediaUrl = null;
+  let caption = null;
+  let fileName = null;
+  let locationData = null;
+  let contactData = null;
+  let interactiveData = null;
+  let pollData = null;
+
+  if (msgContext && typeof msgContext === 'object') {
+    const dbType = msgContext.type || parsedType;
+
+    // Image
+    if (dbType === 'image' || msgContext.imageMessage || msgContext.image) {
+      parsedType = 'image';
+      const img = msgContext.image || msgContext.imageMessage || {};
+      mediaUrl = fixMediaUrl(img.link || img.url || null);
+      caption = img.caption || null;
+      if (!mediaUrl && img.jpegThumbnail) {
+        mediaUrl = 'data:image/jpeg;base64,' + img.jpegThumbnail;
+      }
+    }
+    // Video
+    else if (dbType === 'video' || msgContext.videoMessage || msgContext.video) {
+      parsedType = 'video';
+      const vid = msgContext.video || msgContext.videoMessage || {};
+      mediaUrl = fixMediaUrl(vid.link || vid.url || null);
+      caption = vid.caption || null;
+    }
+    // Audio
+    else if (dbType === 'audio' || msgContext.audioMessage || msgContext.audio) {
+      parsedType = 'audio';
+      const aud = msgContext.audio || msgContext.audioMessage || {};
+      mediaUrl = fixMediaUrl(aud.link || aud.url || null);
+    }
+    // Document
+    else if (dbType === 'document' || msgContext.documentMessage || msgContext.document) {
+      parsedType = 'document';
+      const doc = msgContext.document || msgContext.documentMessage || {};
+      mediaUrl = fixMediaUrl(doc.link || doc.url || null);
+      caption = doc.caption || null;
+      // Extract filename from link or caption
+      if (doc.fileName) {
+        fileName = doc.fileName;
+      } else if (doc.link) {
+        const parts = doc.link.split('/');
+        fileName = parts[parts.length - 1] || 'Document';
+      } else if (mediaUrl) {
+        const parts = mediaUrl.split('/');
+        fileName = parts[parts.length - 1] || 'Document';
+      }
+    }
+    // Sticker
+    else if (dbType === 'sticker' || msgContext.stickerMessage || msgContext.sticker) {
+      parsedType = 'sticker';
+      const stk = msgContext.sticker || msgContext.stickerMessage || {};
+      mediaUrl = fixMediaUrl(stk.link || stk.url || null);
+    }
+    // Location
+    else if (dbType === 'location' || msgContext.locationMessage || msgContext.location) {
+      parsedType = 'location';
+      const loc = msgContext.location || msgContext.locationMessage || {};
+      locationData = {
+        latitude: loc.latitude || loc.degreesLatitude || null,
+        longitude: loc.longitude || loc.degreesLongitude || null,
+        name: loc.name || null,
+        address: loc.address || null
+      };
+    }
+    // Contact
+    else if (dbType === 'contact' || msgContext.contactMessage || msgContext.contact || msgContext.contactsArrayMessage) {
+      parsedType = 'contact';
+      const ct = msgContext.contact || msgContext.contactMessage || {};
+      const vcard = ct.vcard || '';
+      let cName = ct.name || ct.displayName || null;
+      let cPhone = null;
+      // Parse vCard
+      if (vcard) {
+        const fnMatch = vcard.match(/FN[;:]([^\n\r]+)/);
+        if (fnMatch) cName = fnMatch[1].trim();
+        const telMatch = vcard.match(/TEL[^:]*:([\+\d\s]+)/);
+        if (telMatch) cPhone = telMatch[1].trim();
+      }
+      contactData = { name: cName, phone: cPhone, vcard: vcard };
+    }
+    // Interactive (buttons)
+    else if (dbType === 'interactive' || dbType === 'button' || msgContext.interactive) {
+      parsedType = 'interactive';
+      const inter = msgContext.interactive || msgContext;
+      const bodyText = inter.body?.text || null;
+      const buttons = inter.action?.buttons?.map(b => b.reply?.title || b.title || '') || [];
+      interactiveData = { body: bodyText, buttons: buttons };
+    }
+    // Poll
+    else if (dbType === 'poll_creation' || msgContext.pollCreationMessage) {
+      parsedType = 'poll';
+      const poll = msgContext.pollCreationMessage || msgContext;
+      pollData = {
+        question: poll.name || poll.question || 'Poll',
+        options: (poll.options || []).map(o => o.optionName || o.name || o)
+      };
+    }
+    // Reaction
+    else if (dbType === 'reaction' || msgContext.reactionMessage) {
+      parsedType = 'reaction';
+    }
+    // Text types
+    else if (msgContext.text?.body) {
+      parsedType = 'text';
+    } else if (msgContext.conversation) {
+      parsedType = 'text';
+    } else if (msgContext.extendedTextMessage?.text) {
+      parsedType = 'text';
+    }
+  }
+
+  // Extract text content
+  let textContent = null;
+  if (msgContext && typeof msgContext === 'object') {
+    if (msgContext.text?.body) textContent = msgContext.text.body;
+    else if (typeof msgContext.text === 'string') textContent = msgContext.text;
+    else if (msgContext.conversation) textContent = msgContext.conversation;
+    else if (msgContext.extendedTextMessage?.text) textContent = msgContext.extendedTextMessage.text;
+    else if (caption) textContent = caption;
+    else if (interactiveData?.body) textContent = interactiveData.body;
+  } else if (typeof msgContext === 'string') {
+    textContent = msgContext;
+  }
+
+  return {
+    ...row,
+    msgContext: msgContext,
+    parsedType: parsedType,
+    textContent: textContent,
+    mediaUrl: mediaUrl,
+    caption: caption,
+    fileName: fileName,
+    locationData: locationData,
+    contactData: contactData,
+    interactiveData: interactiveData,
+    pollData: pollData,
+    quotedMsg: quotedMsg,
+    reaction: row.reaction || null,
+    senderName: row.senderName || null,
+    senderMobile: row.senderMobile || null
+  };
+}
+
+// ===== Sidebar preview =====
+function getSidebarPreview(row) {
+  const parsed = parseMessageRow(row);
+  switch (parsed.parsedType) {
+    case 'image': return '📷 Photo' + (parsed.caption ? ': ' + parsed.caption.substring(0, 40) : '');
+    case 'video': return '🎬 Video' + (parsed.caption ? ': ' + parsed.caption.substring(0, 40) : '');
+    case 'audio': return '🎤 Voice message';
+    case 'document': return '📎 ' + (parsed.fileName || 'Document');
+    case 'sticker': return '🏷️ Sticker';
+    case 'location': return '📍 ' + (parsed.locationData?.name || 'Location');
+    case 'contact': return '👤 ' + (parsed.contactData?.name || 'Contact');
+    case 'interactive': return parsed.interactiveData?.body || '📋 Interactive';
+    case 'poll': return '📊 ' + (parsed.pollData?.question || 'Poll');
+    case 'reaction': return parsed.reaction || '👍';
+    default: return parsed.textContent ? parsed.textContent.substring(0, 80) : '';
+  }
+}
 
 // Auth middleware
 function authMiddleware(req, res, next) {
@@ -116,7 +325,6 @@ app.get('/api/chats/:lineUid', authMiddleware, async (req, res) => {
   try {
     const { lineUid } = req.params;
     const search = req.query.search || '';
-    // Get line number
     const [inst] = await pool.query('SELECT number FROM instance WHERE uid = ?', [lineUid]);
     if (!inst.length) return res.status(404).json({ error: 'Line not found' });
     const lineNum = inst[0].number;
@@ -130,22 +338,41 @@ app.get('/api/chats/:lineUid', authMiddleware, async (req, res) => {
     }
 
     const [rows] = await pool.query(query, params);
-    const chats = rows.map(r => {
+
+    // For each chat, get the last message for better preview
+    const chats = await Promise.all(rows.map(async (r) => {
       let lastMsg = null;
       let profile = null;
       try { lastMsg = typeof r.last_message === 'string' ? JSON.parse(r.last_message) : r.last_message; } catch(e) {}
       try { profile = typeof r.profile === 'string' ? JSON.parse(r.profile) : r.profile; } catch(e) {}
 
-      // Odoo contact name enrichment
       const odooName = getOdooContactName(r.sender_mobile);
+
+      // Get last message from beta_conversation for rich preview
+      let preview = '';
+      try {
+        const [lastMsgs] = await pool.query(
+          'SELECT * FROM beta_conversation WHERE chat_id = ? ORDER BY id DESC LIMIT 1', [r.chat_id]
+        );
+        if (lastMsgs.length) {
+          preview = getSidebarPreview(lastMsgs[0]);
+        }
+      } catch(e) {}
+
+      // Determine if this is a group chat
+      const parts = r.chat_id.split('_');
+      const contactId = parts.slice(1).join('_');
+      const isGroup = contactId.length >= 15 && /^\d+$/.test(contactId.replace(/_[^_]+$/, ''));
 
       return {
         ...r,
         last_message: lastMsg,
         profile: profile,
+        preview: preview,
+        isGroup: isGroup,
         displayName: r.chat_label || odooName || (r.sender_name && r.sender_name !== 'API' ? r.sender_name : null) || r.sender_mobile || 'Unknown'
       };
-    });
+    }));
     res.json(chats);
   } catch (e) {
     console.error('GET /api/chats error:', e.message);
@@ -153,7 +380,7 @@ app.get('/api/chats/:lineUid', authMiddleware, async (req, res) => {
   }
 });
 
-// Get messages for a chat
+// Get messages for a chat (with full parsing)
 app.get('/api/messages/:chatId', authMiddleware, async (req, res) => {
   try {
     const { chatId } = req.params;
@@ -172,11 +399,7 @@ app.get('/api/messages/:chatId', authMiddleware, async (req, res) => {
     params.push(limit);
 
     const [rows] = await pool.query(query, params);
-    const messages = rows.map(r => {
-      let msgContext = null;
-      try { msgContext = typeof r.msgContext === 'string' ? JSON.parse(r.msgContext) : r.msgContext; } catch(e) {}
-      return { ...r, msgContext };
-    });
+    const messages = rows.map(row => parseMessageRow(row));
     res.json(messages.reverse());
   } catch (e) {
     console.error('GET /api/messages error:', e.message);
@@ -190,14 +413,12 @@ app.post('/api/send', authMiddleware, async (req, res) => {
     const { lineUid, chatId, text } = req.body;
     if (!lineUid || !chatId || !text) return res.status(400).json({ error: 'Missing fields' });
 
-    // Get API key and line number
     const [userRow] = await pool.query(
       'SELECT u.api_key, i.number FROM user u JOIN instance i ON i.uid = u.uid WHERE i.uid = ?', [lineUid]
     );
     if (!userRow.length) return res.status(404).json({ error: 'Line not found' });
     const { api_key, number: lineNum } = userRow[0];
 
-    // Extract contactId from chat_id (format: lineNum_contactId)
     const parts = chatId.split('_');
     const contactId = parts.slice(1).join('_');
     const isGroup = /^\d{15,}$/.test(contactId);
@@ -205,31 +426,17 @@ app.post('/api/send', authMiddleware, async (req, res) => {
     let apiUrl, payload;
     if (isGroup) {
       apiUrl = 'https://dardasha.om/api/qr/rest/group/send';
-      payload = {
-        token: api_key,
-        from: lineNum,
-        groupId: contactId + '@g.us',
-        messageType: 'text',
-        text: text
-      };
+      payload = { token: api_key, from: lineNum, groupId: contactId + '@g.us', messageType: 'text', text: text };
     } else {
       apiUrl = 'https://dardasha.om/api/qr/rest/send_message';
-      payload = {
-        token: api_key,
-        from: lineNum,
-        to: contactId,
-        messageType: 'text',
-        text: text
-      };
+      payload = { token: api_key, from: lineNum, to: contactId, messageType: 'text', text: text };
     }
 
-    // Send via Dardasha
     const apiRes = await axios.post(apiUrl, payload, { timeout: 15000 }).catch(e => ({ data: { error: e.message } }));
 
-    // Insert into beta_conversation
     const now = new Date();
     const timestamp = Math.floor(now.getTime() / 1000);
-    const msgContext = JSON.stringify({ text: text });
+    const msgContext = JSON.stringify({ text: { body: text } });
     const metaChatId = apiRes.data?.data?.key?.id || apiRes.data?.messageId || null;
 
     await pool.query(
@@ -238,8 +445,7 @@ app.post('/api/send', authMiddleware, async (req, res) => {
       [chatId, lineUid, msgContext, 'BHD', lineNum, timestamp, metaChatId]
     );
 
-    // Update last_message in beta_chats
-    const lastMsg = JSON.stringify({ text: text, route: 'OUTGOING', timestamp: timestamp });
+    const lastMsg = JSON.stringify({ text: { body: text }, route: 'OUTGOING', timestamp: timestamp });
     await pool.query(
       `UPDATE beta_chats SET last_message = ?, updatedAt = NOW() WHERE chat_id = ?`,
       [lastMsg, chatId]
@@ -290,7 +496,6 @@ app.post('/api/start-chat', authMiddleware, async (req, res) => {
     const cleanNumber = contactNumber.replace(/[^0-9]/g, '');
     const chatId = `${lineNum}_${cleanNumber}`;
 
-    // Check if chat exists
     const [existing] = await pool.query('SELECT chat_id FROM beta_chats WHERE chat_id = ?', [chatId]);
     if (existing.length) {
       return res.json({ success: true, chatId, existing: true });
@@ -314,13 +519,12 @@ app.delete('/api/messages/:messageId', authMiddleware, async (req, res) => {
   try {
     const { messageId } = req.params;
 
-    // Get message details first
     const [msgRows] = await pool.query('SELECT * FROM beta_conversation WHERE id = ?', [messageId]);
     if (!msgRows.length) return res.status(404).json({ error: 'Message not found' });
 
     const msg = msgRows[0];
 
-    // Try to delete via Dardasha if outgoing and has metaChatId
+    // Try to delete via Dardasha for outgoing messages
     if (msg.metaChatId && msg.route === 'OUTGOING') {
       const [userRow] = await pool.query(
         'SELECT u.api_key, i.number FROM user u JOIN instance i ON i.uid = u.uid WHERE i.uid = ?', [msg.uid]
@@ -350,7 +554,7 @@ app.delete('/api/messages/:messageId', authMiddleware, async (req, res) => {
   }
 });
 
-// Get contacts for a line (enriched with Odoo names)
+// Get contacts for a line
 app.get('/api/contacts/:lineUid', authMiddleware, async (req, res) => {
   try {
     const { lineUid } = req.params;
@@ -376,15 +580,12 @@ app.get('/api/contacts/:lineUid', authMiddleware, async (req, res) => {
   }
 });
 
-// Odoo contacts lookup endpoint
+// Odoo contacts
 app.get('/api/odoo-contacts', authMiddleware, (req, res) => {
-  if (Date.now() - odooContactsCacheTime > ODOO_CACHE_TTL) {
-    refreshOdooContacts();
-  }
+  if (Date.now() - odooContactsCacheTime > ODOO_CACHE_TTL) refreshOdooContacts();
   res.json({ count: Object.keys(odooContactsCache).length, contacts: odooContactsCache });
 });
 
-// Force refresh Odoo contacts
 app.post('/api/odoo-contacts/refresh', authMiddleware, (req, res) => {
   refreshOdooContacts();
   res.json({ success: true, count: Object.keys(odooContactsCache).length });
@@ -395,7 +596,7 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString(), odooContacts: Object.keys(odooContactsCache).length });
 });
 
-// Serve frontend static files
+// Serve frontend
 app.use(express.static(path.join(__dirname, '..', 'frontend', 'dist')));
 
 // SPA fallback (Express 5 syntax)

@@ -20,14 +20,26 @@ function getPreview(lastMsg) {
   if (!lastMsg) return '';
   try {
     const msg = typeof lastMsg === 'string' ? JSON.parse(lastMsg) : lastMsg;
-    if (msg?.text) return msg.text;
-    if (msg?.imageMessage) return '📷 Photo';
+    // Dardasha format: {"type":"image","image":{...}}
+    if (msg?.type === 'image') return '📷 ' + (msg.image?.caption || 'Photo');
+    if (msg?.type === 'video') return '🎬 ' + (msg.video?.caption || 'Video');
+    if (msg?.type === 'audio') return '🎤 Voice message';
+    if (msg?.type === 'document') return '📄 ' + (msg.document?.caption || msg.document?.fileName || 'Document');
+    if (msg?.type === 'sticker') return '🏷️ Sticker';
+    if (msg?.type === 'location') return '📍 Location';
+    if (msg?.type === 'contact' || msg?.type === 'contacts') return '👤 Contact';
+    if (msg?.type === 'poll_creation') return '📊 ' + (msg.poll?.name || 'Poll');
+    if (msg?.type === 'text' && msg?.text) return typeof msg.text === 'string' ? msg.text : (msg.text?.body || '');
+    // Baileys format
+    if (msg?.text) return typeof msg.text === 'string' ? msg.text : (msg.text?.body || msg.text);
+    if (msg?.imageMessage) return '📷 ' + (msg.imageMessage.caption || 'Photo');
     if (msg?.audioMessage) return '🎤 Voice';
     if (msg?.videoMessage) return '🎬 Video';
-    if (msg?.documentMessage) return '📄 Document';
+    if (msg?.documentMessage) return '📄 ' + (msg.documentMessage.fileName || 'Document');
     if (msg?.stickerMessage) return '🏷️ Sticker';
     if (msg?.contactMessage) return '👤 Contact';
     if (msg?.locationMessage) return '📍 Location';
+    if (msg?.pollCreationMessage) return '📊 Poll';
     // Fallback: try first string value
     const vals = Object.values(msg);
     for (const v of vals) if (typeof v === 'string' && v.length > 0 && v.length < 200) return v;
