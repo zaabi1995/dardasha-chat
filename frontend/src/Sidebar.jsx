@@ -16,31 +16,34 @@ function formatTime(dateStr) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-function getPreview(lastMsg) {
+function getPreview(chat) {
+  // Use backend-parsed preview if available
+  if (chat.preview) return chat.preview;
+
+  const lastMsg = chat.last_message;
   if (!lastMsg) return '';
   try {
     const msg = typeof lastMsg === 'string' ? JSON.parse(lastMsg) : lastMsg;
-    // Dardasha format: {"type":"image","image":{...}}
-    if (msg?.type === 'image') return '📷 ' + (msg.image?.caption || 'Photo');
-    if (msg?.type === 'video') return '🎬 ' + (msg.video?.caption || 'Video');
-    if (msg?.type === 'audio') return '🎤 Voice message';
-    if (msg?.type === 'document') return '📄 ' + (msg.document?.caption || msg.document?.fileName || 'Document');
-    if (msg?.type === 'sticker') return '🏷️ Sticker';
-    if (msg?.type === 'location') return '📍 Location';
-    if (msg?.type === 'contact' || msg?.type === 'contacts') return '👤 Contact';
-    if (msg?.type === 'poll_creation') return '📊 ' + (msg.poll?.name || 'Poll');
-    if (msg?.type === 'text' && msg?.text) return typeof msg.text === 'string' ? msg.text : (msg.text?.body || '');
-    // Baileys format
-    if (msg?.text) return typeof msg.text === 'string' ? msg.text : (msg.text?.body || msg.text);
-    if (msg?.imageMessage) return '📷 ' + (msg.imageMessage.caption || 'Photo');
-    if (msg?.audioMessage) return '🎤 Voice';
-    if (msg?.videoMessage) return '🎬 Video';
-    if (msg?.documentMessage) return '📄 ' + (msg.documentMessage.fileName || 'Document');
-    if (msg?.stickerMessage) return '🏷️ Sticker';
-    if (msg?.contactMessage) return '👤 Contact';
-    if (msg?.locationMessage) return '📍 Location';
-    if (msg?.pollCreationMessage) return '📊 Poll';
-    // Fallback: try first string value
+    if (msg?.text?.body) return msg.text.body;
+    if (typeof msg?.text === 'string') return msg.text;
+    if (msg?.conversation) return msg.conversation;
+    if (msg?.type === 'image' || msg?.imageMessage || msg?.image) return '📷 Photo';
+    if (msg?.type === 'video' || msg?.videoMessage || msg?.video) return '🎬 Video';
+    if (msg?.type === 'audio' || msg?.audioMessage || msg?.audio) return '🎤 Voice message';
+    if (msg?.type === 'document' || msg?.documentMessage || msg?.document) {
+      const doc = msg.document || msg.documentMessage || {};
+      return '📎 ' + (doc.fileName || doc.caption || 'Document');
+    }
+    if (msg?.type === 'sticker' || msg?.stickerMessage || msg?.sticker) return '🏷️ Sticker';
+    if (msg?.type === 'contact' || msg?.contactMessage || msg?.contact) {
+      const ct = msg.contact || msg.contactMessage || {};
+      return '👤 ' + (ct.name || ct.displayName || 'Contact');
+    }
+    if (msg?.type === 'location' || msg?.locationMessage || msg?.location) {
+      const loc = msg.location || msg.locationMessage || {};
+      return '📍 ' + (loc.name || 'Location');
+    }
+    // Fallback
     const vals = Object.values(msg);
     for (const v of vals) if (typeof v === 'string' && v.length > 0 && v.length < 200) return v;
     return '';
@@ -110,7 +113,6 @@ export default function Sidebar({ lines, activeLine, setActiveLine, chats, activ
           </div>
         </div>
         <div className="flex items-center gap-1">
-          {/* New chat button */}
           <button
             onClick={() => setShowNewChat(true)}
             className="p-2 rounded-full hover:bg-wa-hover text-wa-textSec"
@@ -120,7 +122,6 @@ export default function Sidebar({ lines, activeLine, setActiveLine, chats, activ
               <path d="M19.005 3.175H4.674C3.642 3.175 3 3.789 3 4.821V21.02l3.544-3.514h12.461c1.033 0 2.064-1.06 2.064-2.093V4.821c-.001-1.032-1.032-1.646-2.064-1.646zm-4.989 9.869H7.041V11.1h6.975v1.944zm3-4H7.041V7.1h9.975v1.944z"/>
             </svg>
           </button>
-          {/* Line selector (if multiple lines) */}
           {lines.length > 1 && (
             <select
               value={activeLine?.uid || ''}
@@ -132,7 +133,6 @@ export default function Sidebar({ lines, activeLine, setActiveLine, chats, activ
               ))}
             </select>
           )}
-          {/* Logout */}
           <button
             onClick={api.logout}
             className="p-2 rounded-full hover:bg-wa-hover text-wa-textSec"
@@ -200,7 +200,7 @@ export default function Sidebar({ lines, activeLine, setActiveLine, chats, activ
 function ChatItem({ chat, active, onClick }) {
   const name = chat.displayName || chat.chat_label || chat.sender_name || chat.sender_mobile || 'Unknown';
   const time = formatTime(chat.updatedAt);
-  const preview = getPreview(chat.last_message);
+  const preview = getPreview(chat);
   const unread = chat.unread_count || 0;
 
   return (
