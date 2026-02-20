@@ -175,8 +175,12 @@ function getInitials(name) {
 
 function getPreview(lastMsg) {
   if (!lastMsg) return '';
-  const text = lastMsg.text || lastMsg.caption || '';
-  if (text.length > 50) return text.slice(0, 50) + '...';
+  let text = '';
+  if (typeof lastMsg.text === 'string') text = lastMsg.text;
+  else if (typeof lastMsg.text === 'object' && lastMsg.text) text = lastMsg.text.body || '';
+  else if (typeof lastMsg.body === 'string') text = lastMsg.body;
+  else if (typeof lastMsg.caption === 'string') text = lastMsg.caption;
+  if (text && text.length > 50) return text.slice(0, 50) + '...';
   return text || (lastMsg.type === 'image' ? '📷 Image' : lastMsg.type === 'document' ? '📄 Document' : '');
 }
 
@@ -190,7 +194,22 @@ function getMsgText(msg) {
   if (!msg.msgContext) return '';
   const ctx = msg.msgContext;
   if (typeof ctx === 'string') return ctx;
-  return ctx.text || ctx.caption || ctx.body || (ctx.type === 'image' ? '📷 Image' : ctx.type === 'document' ? '📄 Document' : ctx.type === 'audio' ? '🎵 Audio' : ctx.type === 'video' ? '🎥 Video' : ctx.type === 'sticker' ? '🏷️ Sticker' : JSON.stringify(ctx).slice(0, 100));
+  if (typeof ctx === 'object') {
+    // Handle nested Dardasha format: {"type":"text","text":{"body":"hello","preview_url":true}}
+    if (ctx.type === 'text' && ctx.text && typeof ctx.text === 'object') return ctx.text.body || '';
+    if (ctx.type === 'image' && ctx.image) return ctx.image.caption ? '📷 ' + ctx.image.caption : '📷 Image';
+    if (ctx.type === 'document' && ctx.document) return ctx.document.caption || '📄 Document';
+    if (ctx.type === 'audio') return '🎵 Audio';
+    if (ctx.type === 'video' && ctx.video) return ctx.video.caption ? '🎥 ' + ctx.video.caption : '🎥 Video';
+    if (ctx.type === 'sticker') return '🏷️ Sticker';
+    // Handle flat format: {"text": "hello"} or {"body": "hello"}
+    if (typeof ctx.text === 'string') return ctx.text;
+    if (typeof ctx.body === 'string') return ctx.body;
+    if (typeof ctx.caption === 'string') return ctx.caption;
+    if (typeof ctx.message === 'string') return ctx.message;
+    return JSON.stringify(ctx).slice(0, 100);
+  }
+  return String(ctx);
 }
 
 /* ========== MAIN APP ========== */
