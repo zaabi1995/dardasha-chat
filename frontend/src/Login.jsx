@@ -45,7 +45,7 @@ export default function Login({ onLogin }) {
 
           <form onSubmit={handleSubmit}>
             <input
-              type="password"
+              type="password" autocomplete="new-password"
               value={password}
               onChange={e => setPassword(e.target.value)}
               placeholder="Password"

@@ -1,13 +1,28 @@
 import { useState, useRef, useEffect } from 'react';
 import { Avatar, formatTime } from './Sidebar';
 
+
+// Safe string coercion — prevents e.split crash when message content is an object
+function safeString(val) {
+  if (val === null || val === undefined) return "";
+  if (typeof val === "string") return val;
+  if (typeof val === "object") {
+    if (val.body) return String(val.body);
+    if (val.text) return typeof val.text === "string" ? val.text : (val.text?.body || "");
+    if (val.caption) return String(val.caption);
+    if (val.conversation) return String(val.conversation);
+    return "";
+  }
+  return String(val);
+}
+
 function getMsgText(msgContext) {
   if (!msgContext) return '';
   const ctx = typeof msgContext === 'string' ? (() => { try { return JSON.parse(msgContext); } catch { return null; } })() : msgContext;
   if (!ctx) return String(msgContext);
-  if (ctx.text) return ctx.text;
-  if (ctx.conversation) return ctx.conversation;
-  if (ctx.extendedTextMessage?.text) return ctx.extendedTextMessage.text;
+  if (ctx.text) return safeString(ctx.text);
+  if (ctx.conversation) return safeString(ctx.conversation);
+  if (ctx.extendedTextMessage?.text) return safeString(ctx.extendedTextMessage.text);
   if (ctx.imageMessage) return '📷 Photo';
   if (ctx.audioMessage) return '🎤 Voice message';
   if (ctx.videoMessage) return '🎬 Video';
@@ -298,6 +313,7 @@ function MessageBubble({ msg, onContextMenu, onDelete, showMenu }) {
 
 function renderLinks(text) {
   if (!text) return text;
+  if (typeof text !== 'string') text = String(text);
   const urlRegex = /(https?:\/\/[^\s]+)/g;
   const parts = text.split(urlRegex);
   if (parts.length === 1) return text;
