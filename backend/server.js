@@ -50,16 +50,16 @@ app.post('/api/login', (req, res) => {
   return res.status(401).json({ error: 'Wrong password' });
 });
 
-// Get WA lines
+// Get WA lines — only ACTIVE instances
 app.get('/api/lines', authMiddleware, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      `SELECT i.uid, i.number, u.api_key FROM instance i JOIN user u ON i.uid = u.uid WHERE i.number IS NOT NULL AND i.number != ''`
+      `SELECT i.uid, i.number, i.title, i.status, u.api_key FROM instance i JOIN user u ON i.uid = u.uid WHERE i.number IS NOT NULL AND i.number != '' AND UPPER(i.status) = 'ACTIVE'`
     );
     const lines = rows.map(r => ({
       uid: r.uid,
       number: r.number,
-      name: r.number === '96898899100' ? 'Anna' : r.number === '96891117795' ? 'Kabir' : r.number,
+      name: r.title || r.number,
       api_key: r.api_key
     }));
     res.json(lines);
